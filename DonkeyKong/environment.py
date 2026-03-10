@@ -34,6 +34,10 @@ class Environment:
         # Player reference (will be set later)
         self.player = None
         
+        # Step tracking for RL
+        self.steps = 0
+        self.reached_princess = False
+        
         # Create game elements
         self._create_platforms()
         self._create_ladders()
@@ -272,6 +276,7 @@ class Environment:
                 self.player.change_y = 0
                 for barrel in self.barrels:
                     barrel.kill()
+                self.reached_princess = True  # <-- חשוב: מסמן ניצחון
 
             # Ensure player sprite updates (animation/image switching)
             try:
@@ -280,7 +285,7 @@ class Environment:
                 pass
 
     def get_state(self):
-        # Default state values
+        # ... (נשאר זהה, לא משתנה) ...
         state = {
             'player_platform': -1,
             'player_x': 0,
@@ -338,11 +343,8 @@ class Environment:
         state['in_air'] = 1 if (not self.player.on_ladder and self.player.change_y != 0) else 0
 
         # --- Ladder delta x (nearest ladder, signed) ---
-        # CHANGED: Use platform ID matching
         valid_ladders = []
         for lad in self.ladders:
-            # Check if ladder belongs to the current platform
-            # We use -1 default to avoid crash if attribute missing (though we just added it)
             if getattr(lad, 'platform_number', -1) == self.player.current_platform_number:
                 valid_ladders.append(lad)
 
@@ -354,12 +356,10 @@ class Environment:
             state['ladder_dx'] = nearest_ladder.rect.centerx - player_x
         else:
             state['ladder_dx'] = 0 
-        # END CHANGED SECTION
 
         # --- Closest BARREL FACING the player (signed delta x) ---
         threatening_barrels = []
         for b in self.barrels:
-            # Barrel is facing the player
             if ((b.rect.centerx < player_x and b.change_x > 0) or
                 (b.rect.centerx > player_x and b.change_x < 0)):
                 threatening_barrels.append(b)
@@ -391,10 +391,7 @@ class Environment:
 
 
     def state_to_tensor(self, state):
-        """
-        Convert state dictionary to a fixed-size state tensor (length = 11).
-        """
-
+        # ... (נשאר זהה) ...
         state_tensor = torch.tensor(
             [
                 state['player_platform'],          # 0
@@ -419,12 +416,11 @@ class Environment:
         state_tensor[7] = state_tensor[7] / self.screen_width  #  Normalize princess dx
         state_tensor[9] = state_tensor[9] / self.screen_width  # Normalize platform left dx
         state_tensor[10] = state_tensor[10] / self.screen_width  # Normalize platform right dx
-        
 
         return state_tensor
     
     def is_player_on_platform(self):
-        # Check if player is on any platform
+        # ... (נשאר זהה) ...
         if not self.player:
             return False
             
@@ -435,272 +431,51 @@ class Environment:
         return False
     
     def is_player_on_ladder(self):
-        # Check if player is touching any ladder
+        # ... (נשאר זהה) ...
         if not self.player:
             return False
             
         for ladder in self.ladders:
-            # Check if player's center is aligned with ladder
-            # Allow a bit more tolerance horizontally and vertically for easier ladder grabbing
             player_center_x = self.player.rect.centerx
             ladder_center_x = ladder.rect.centerx
 
-            # Horizontal tolerance
             horiz_tol = 32
             if abs(player_center_x - ladder_center_x) <= horiz_tol:
-                # Vertical tolerance: only within ladder bounds (not above it)
                 if (ladder.rect.top <= self.player.rect.bottom <= ladder.rect.bottom + 24):
                     return True
         return False
 
     def is_player_center_on_ladder(self):
-        # Return True if the player's horizontal center is directly over any ladder
+        # ... (נשאר זהה) ...
         if not self.player:
             return False
         for ladder in self.ladders:
-            if ladder.rect.left <= self.player.rect.centerx <= ladder.rect.right:
-                # Also ensure vertical overlap with ladder extent (allow small tolerance)
-                if (ladder.rect.top - 24 <= self.player.rect.bottom <= ladder.rect.bottom + 24):
-                    return True
+            player_center_x = self.player.rect.centerx
+            ladder_center_x = ladder.rect.centerx
+            horiz_tol = 10
+            if abs(player_center_x - ladder_center_x) <= horiz_tol:
+                return True
         return False
 
-    def get_ladder_under_center(self):
-        """Return the ladder sprite under the player's horizontal center (or None)."""
-        if not self.player:
-            return None
-        for ladder in self.ladders:
-            if ladder.rect.left <= self.player.rect.centerx <= ladder.rect.right:
-                if (ladder.rect.top - 24 <= self.player.rect.bottom <= ladder.rect.bottom + 24):
-                    return ladder
-        return None
-    
-    def step(self, action):
-        """
-        Execute action, calculate reward, and return result.
-        Returns: (next_state_tensor, reward, done)
-        """
-        if not self.player:
-            return self.state_to_tensor(self.get_state()), 0, True
-
-        # 1. State BEFORE action (used for reward shaping)
-        prev_state_dict = self.get_state()
-        prev_y = self.player.rect.y
-        prev_lives = self.lives
-        prev_score = self.score
-        prev_on_ladder = self.player.on_ladder
-        
-        # --- EXECUTE PHYSICS ---
-        
-        # Ladder grabbing logic
-        ladder_under_center = self.get_ladder_under_center()
-        target_ladder = ladder_under_center
-        if not self.player.on_ladder and not target_ladder:
-            for lad in self.ladders:
-                if abs(self.player.rect.centerx - lad.rect.centerx) <= 40 and \
-                   (lad.rect.top - 40 <= self.player.rect.bottom <= lad.rect.bottom + 40):
-                    target_ladder = lad
-                    break
-
-        if not self.player.on_ladder and target_ladder:
-            if action == 3 or (action == 4 and not self.is_player_on_platform()):
-                self.player.on_ladder = True
-                # reset hang counter when first grabbing ladder
-                try:
-                    self.player.ladder_hold_counter = 0
-                    self.player.just_grabbed_ladder = True  # Flag to reward ladder grab
-                except Exception:
-                    pass
-                self.player.change_y = 0
-                self.player.is_jumping = False
-                self.player.rect.centerx = target_ladder.rect.centerx
-                if self.is_player_on_platform():
-                    self.player.rect.y -= 2
-                self.player.change_x = 0
-                if action == 3: self.player.move_up()
-                elif action == 4: self.player.move_down()
-
-        if self.player.on_ladder:
-            if action == 3:
-                self.player.move_up()
-                self._align_to_ladder()
-                self._check_ladder_to_platform_transition()
-            elif action == 4:
-                can_move_down = True
-                if self.is_player_on_platform():
-                    if ladder_under_center and abs(self.player.rect.bottom - ladder_under_center.rect.bottom) < 10:
-                        can_move_down = False
-                if can_move_down: self.player.move_down()
-                else: self.player.stop_vertical()
-                self._align_to_ladder()
-            else:
-                self.player.stop_vertical()
-
-            if action == 2 or action == 7: self.player.move_left()
-            elif action == 1 or action == 6: self.player.move_right()
-            else: self.player.stop_horizontal()
-            
-            if not ladder_under_center and action != 3 and action != 4:
-                self.player.on_ladder = False
-                self.player.change_y = 0
-
-        else:
-            # Not on ladder
-            was_on_ladder = self.player.on_ladder
-            self.player.on_ladder = False
-            
-            if action == 2 or action == 7:
-                if was_on_ladder: self.player.change_x = -self.player.speed
-                else: self.player.move_left()
-            elif action == 1 or action == 6:
-                if was_on_ladder: self.player.change_x = self.player.speed
-                else: self.player.move_right()
-            elif action != 5: # Don't stop horizontal if Jumping
-                self.player.stop_horizontal()
-            
-            if (action == 5 or action == 6 or action == 7 or action == 3) and not target_ladder:
-                if self.is_player_on_platform() and not self.player.is_jumping:
-                    self.player.jump()
-
-        # Update physics
-        self.update()
-        # --- Track ladder hold (frames holding ladder without moving) ---
-        try:
-            if self.player.on_ladder:
-                # consider tiny movement as moving
-                if abs(self.player.change_y) < 0.5:
-                    self.player.ladder_hold_counter = getattr(self.player, 'ladder_hold_counter', 0) + 1
-                else:
-                    self.player.ladder_hold_counter = 0
-            else:
-                self.player.ladder_hold_counter = 0
-        except Exception:
-            pass
-        # Detect if a jump actually happened
-        next_state_dict = self.get_state()
-
-        jump_happened = (
-        prev_state_dict['in_air'] == 0 and
-        next_state_dict['in_air'] == 1 and
-        not next_state_dict['on_ladder']
-    )
-
-
-        # 2. State AFTER action
-        #next_state_dict = self.get_state()
-
-        # --- REWARD CALCULATION (IMPROVED) ---
+    def compute_reward(self, prev_state_dict, prev_score, prev_lives):
+        # =================== REWARD ===================
         reward = 0
 
-        # A. Reward for climbing UP (y decreases)
-        diff_y = prev_y - self.player.rect.y
-        if diff_y > 0:
-            reward += diff_y * 5.0  # Increased reward for going up
+        # 1️⃣ Step penalty חזק
+        reward -= 1.0
 
-        # B. Distance Shaping: Reward getting closer to LADDER
-        if not self.player.on_ladder:
-            prev_lad_dist = abs(prev_state_dict['ladder_dx'])
-            curr_lad_dist = abs(next_state_dict['ladder_dx'])
-
-            if curr_lad_dist < prev_lad_dist:
-                reward += 3.0  # Increased reward for moving toward ladder
-            elif curr_lad_dist > prev_lad_dist:
-                reward -= 3.0  # Increased penalty for moving away
-
-        # C. Distance Shaping: Reward getting closer to PRINCESS
-        prev_prin_dist = abs(prev_state_dict['princess_dx'])
-        curr_prin_dist = abs(next_state_dict['princess_dx'])
-        if curr_prin_dist < prev_prin_dist:
-            reward += 2.0  # Increased reward for moving toward princess
-
-        # D. Reward for jumping over barrels
-        if jump_happened:
-            barrel_distance = abs(prev_state_dict['barrel_dx'])
-
-            if barrel_distance > 200:
-                reward -= 10  # Increased penalty for irrelevant jumps
-            elif 80 < barrel_distance <= 200:
-                reward -= 5  # Increased penalty for distant barrels
-            else:
-                reward += 5  # Reduced reward for close barrels
-
-        # E. Penalty for staying still
+        # 2️⃣ Penalty אם עומד במקום
         if self.player.rect.x == prev_state_dict['player_x'] and self.player.rect.y == prev_state_dict['player_y']:
-            reward -= 2.0  # Penalty for not moving
+            reward -= 5.0
 
-        # F. Survival / Winning / Losing
+        # 3️⃣ Losing / Winning
         if self.lives < prev_lives or (self.game_over and self.lives == 0):
             reward = -100
-
-        if self.score > prev_score:
+        elif self.score > prev_score:
             reward = +5000
 
-        # G. Living penalty (encourage speed)
-        reward -= 1
+        # 4️⃣ End-of-episode penalty אם עבר 5000 צעדים ולא הגיע ל-princess
+        if getattr(self, 'steps', 0) >= 5000 and not getattr(self, 'reached_princess', False):
+            reward -= 100
 
-        # H. Reward for grabbing a ladder (encourages ladder use)
-        if self.player.on_ladder and not prev_on_ladder:
-            reward += 10  # Reward for using ladders
-
-        # G. Reward for reaching platform via ladder (successful climb)
-        if not self.player.on_ladder and prev_on_ladder:
-            # Successfully exited ladder, likely reached a platform
-            reward += 40  # Strong reward for successful climb
-
-        # H. Scaled penalty for prolonged hanging (starts after 30 frames, not abrupt)
-        hold_cnt = getattr(self.player, 'ladder_hold_counter', 0)
-        if hold_cnt > 30:
-            # Scale penalty: 0.3 per extra frame beyond 30
-            hang_penalty = (hold_cnt - 30) * 0.3
-            reward -= hang_penalty
-
-        # Return the new tensor state, the reward, and done flag
-        next_state = self.state_to_tensor(next_state_dict)
-        return next_state, reward, self.game_over
-
-    def _align_to_ladder(self):
-        """Smoothly align character to ladder center when climbing"""
-        for ladder in self.ladders:
-            if abs(self.player.rect.centerx - ladder.rect.centerx) <= 40:
-                diff = ladder.rect.centerx - self.player.rect.centerx
-                if abs(diff) > 2:
-                    self.player.rect.x += diff * 0.3
-                else:
-                    self.player.rect.centerx = ladder.rect.centerx
-                break
-
-    def _check_ladder_to_platform_transition(self):
-        if not self.player.on_ladder:
-            return
-            
-        # Find the ladder we are currently on
-        current_ladder = self.get_ladder_under_center()
-        if not current_ladder:
-            return
-
-        # Only transition if we are closer to the top of the ladder than the bottom
-        if abs(self.player.rect.bottom - current_ladder.rect.bottom) < abs(self.player.rect.bottom - current_ladder.rect.top):
-            return
-            
-        for platform in self.platforms:
-            if (self.player.rect.bottom <= platform.rect.top + 8 and 
-                self.player.rect.bottom >= platform.rect.top - 20 and
-                platform.rect.left - 30 <= self.player.rect.centerx <= platform.rect.right + 30):
-                self.player.on_ladder = False
-                self.player.rect.bottom = platform.rect.top
-                self.player.change_y = 0
-                self.player.stop_vertical()
-                break
-
-    def render(self, screen):
-        """Render the game state"""
-        self.platforms.draw(screen)
-        self.ladders.draw(screen)
-        self.barrels.draw(screen)
-        if self.player:
-            screen.blit(self.player.image, self.player.rect)
-        screen.blit(self.donkey_kong.image, self.donkey_kong.rect)
-        screen.blit(self.princess.image, self.princess.rect)
-
-    def close(self):
-        """Clean up pygame resources"""
-        pygame.quit()
+        return reward

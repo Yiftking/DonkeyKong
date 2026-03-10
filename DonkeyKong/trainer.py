@@ -88,7 +88,8 @@ def main():
                 "avg_score_100": avg_score,
                 "avg_platform_100": avg_platform,
                 "epsilon": agent.epsilon,
-                "best_score": best_score
+                "best_score": best_score,
+                "steps": step
             })
 
             reward_buffer.clear()
